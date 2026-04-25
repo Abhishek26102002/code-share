@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Copy, Info, Settings } from "lucide-react";
+import { ArrowLeft, Copy, Download, Info, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { decryptText, encryptText } from "@/lib/crypto";
 import { starterSnippet } from "@/lib/editor";
@@ -18,6 +18,7 @@ export function CodeRoom({ roomId }: { roomId: string }) {
   const [status, setStatus] = useState<SyncState>("connecting");
   const [notice, setNotice] = useState("Preparing secure room...");
   const [copied, setCopied] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
   const [fullRoomUrl, setFullRoomUrl] = useState("");
   const [isRoomReady, setIsRoomReady] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
@@ -303,6 +304,28 @@ export function CodeRoom({ roomId }: { roomId: string }) {
     gutterRef.current.scrollTop = textareaRef.current.scrollTop;
   };
 
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCodeCopied(true);
+      window.setTimeout(() => setCodeCopied(false), 1800);
+    } catch {
+      setCodeCopied(false);
+    }
+  };
+
+  const downloadCode = () => {
+    const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `code-share-${roomId}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const iconRailButtonClassName =
     "group inline-flex h-11 items-center overflow-hidden rounded-full border border-[var(--border)] bg-[var(--card)] px-3 text-sm font-medium text-[var(--foreground)] shadow-[var(--shadow)] backdrop-blur-xl transition-all duration-200 hover:w-auto hover:bg-white/5 focus-visible:w-auto";
 
@@ -354,11 +377,38 @@ export function CodeRoom({ roomId }: { roomId: string }) {
       </div>
 
       <section className="overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow)] backdrop-blur-xl">
-        <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3 text-sm text-[var(--muted)]">
-          <span>Live editor</span>
-          <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs uppercase tracking-[0.18em]">
-            {status}
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3 text-sm text-[var(--muted)]">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              onClick={copyCode}
+              className="rounded-full"
+              disabled={!isRoomReady}
+            >
+              <Copy className="size-4" />
+              {codeCopied ? "Code copied" : "Copy code"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              onClick={downloadCode}
+              className="rounded-full"
+              disabled={!isRoomReady}
+            >
+              <Download className="size-4" />
+              Download .txt
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <span>Live editor</span>
+            <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs uppercase tracking-[0.18em]">
+              {status}
+            </span>
+          </div>
         </div>
 
         <div className="grid grid-cols-[auto_1fr] bg-[var(--editor)]">
