@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Copy, Link2 } from "lucide-react";
+import { ArrowLeft, Copy, Info, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { decryptText, encryptText } from "@/lib/crypto";
 import { starterSnippet } from "@/lib/editor";
 import { SettingsPanel } from "@/components/settings-panel";
+import { Modal } from "@/components/ui/modal";
 import { isSupabaseConfigured, supabase, type RoomRecord } from "@/lib/supabase";
 
 type SyncState = "connecting" | "live" | "offline" | "error";
@@ -19,11 +20,15 @@ export function CodeRoom({ roomId }: { roomId: string }) {
   const [copied, setCopied] = useState(false);
   const [fullRoomUrl, setFullRoomUrl] = useState("");
   const [isRoomReady, setIsRoomReady] = useState(false);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const secretRef = useRef("");
   const lastSyncedContentRef = useRef("");
   const latestCodeRef = useRef("");
   const debounceRef = useRef<number | null>(null);
   const isFlushingRef = useRef(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const gutterRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setFullRoomUrl(window.location.href);
@@ -31,6 +36,11 @@ export function CodeRoom({ roomId }: { roomId: string }) {
 
   useEffect(() => {
     latestCodeRef.current = code;
+  }, [code]);
+
+  const lineNumbers = useMemo(() => {
+    const lineCount = Math.max(1, code.split("\n").length);
+    return Array.from({ length: lineCount }, (_, index) => index + 1);
   }, [code]);
 
   useEffect(() => {
@@ -285,68 +295,150 @@ export function CodeRoom({ roomId }: { roomId: string }) {
     }
   };
 
+  const syncGutterScroll = () => {
+    if (!textareaRef.current || !gutterRef.current) {
+      return;
+    }
+
+    gutterRef.current.scrollTop = textareaRef.current.scrollTop;
+  };
+
+  const iconRailButtonClassName =
+    "group inline-flex h-11 items-center overflow-hidden rounded-full border border-[var(--border)] bg-[var(--card)] px-3 text-sm font-medium text-[var(--foreground)] shadow-[var(--shadow)] backdrop-blur-xl transition-all duration-200 hover:w-auto hover:bg-white/5 focus-visible:w-auto";
+
+  const iconRailLabelClassName =
+    "max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 group-hover:ml-2 group-hover:max-w-28 group-hover:opacity-100 group-focus-visible:ml-2 group-focus-visible:max-w-28 group-focus-visible:opacity-100";
+
   return (
-    <main className="mx-auto w-[min(1160px,calc(100vw-32px))] py-7 sm:w-[min(1160px,calc(100vw-40px))] sm:py-8">
-      <div className="mb-5 flex flex-wrap justify-between gap-4">
-        <div className="grid gap-2.5">
+    <main className="mx-auto w-full py-7 sm:w-[min(1160px,calc(100vw-40px))] sm:py-8">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-2.5">
           <Link
             href="/"
-            className="inline-flex w-fit items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--card)] px-4 py-2 text-sm font-medium shadow-[var(--shadow)] backdrop-blur-xl"
+            className={iconRailButtonClassName}
+            aria-label="Back to home"
           >
             <ArrowLeft className="size-4" />
-            Back to home
+            <span className={iconRailLabelClassName}>Back to home</span>
           </Link>
-          <div>
-            <h1 className="text-[clamp(2rem,4vw,3.2rem)] font-semibold tracking-[-0.04em]">
-              Room {roomId}
-            </h1>
-            <p className="mt-2.5 max-w-[62ch] leading-7 text-[var(--muted)]">
-              Share the full URL to collaborate. The hash part after `#` is the private
-              key used to decrypt the code in the browser.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-start gap-2.5">
-          <SettingsPanel />
-          <Button variant="secondary" type="button" onClick={copyLink} className="h-11 px-5">
-            <Copy className="size-4" />
-            {copied ? "Link copied" : "Copy room link"}
+          <Button
+            variant="secondary"
+            type="button"
+            onClick={() => setIsSettingsOpen(true)}
+            className="size-11 rounded-full px-0"
+            aria-label="Open settings"
+          >
+            <Settings className="size-4" />
           </Button>
+          <Button
+            variant="secondary"
+            type="button"
+            onClick={() => setIsInfoOpen(true)}
+            className="size-11 rounded-full px-0"
+            aria-label="Open room details"
+          >
+            <Info className="size-4" />
+          </Button>
+          <button
+            type="button"
+            onClick={copyLink}
+            className={iconRailButtonClassName}
+            aria-label="Copy room link"
+          >
+            <Copy className="size-4" />
+            <span className={iconRailLabelClassName}>
+              {copied ? "Link copied" : "Copy room link"}
+            </span>
+          </button>
         </div>
       </div>
 
-      <section className="mb-4 rounded-[1.75rem] border border-[var(--border)] bg-[var(--card)] p-4 shadow-[var(--shadow)] backdrop-blur-xl">
-        <div className="grid gap-2.5 sm:grid-cols-[1fr_auto] sm:items-center">
-          <div className="text-sm text-[var(--muted)]">{notice}</div>
-          <div className="inline-flex w-fit items-center rounded-full border border-[var(--border)] px-3 py-1.5 text-sm capitalize">
-            {status}
-          </div>
-        </div>
-
-        <div className="mt-3 rounded-2xl border border-[var(--border)] bg-[color-mix(in_srgb,var(--card-strong)_80%,transparent_20%)] px-4 py-3 text-sm leading-6 break-all text-[var(--muted)]">
-          <div className="mb-1 inline-flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-[var(--foreground)]/70">
-            <Link2 className="size-3.5" />
-            Room URL
-          </div>
-          {fullRoomUrl || "Open this room in the browser to copy the full share link."}
-        </div>
-      </section>
-
       <section className="overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow)] backdrop-blur-xl">
-        <div className="border-b border-[var(--border)] px-4 py-3 text-sm text-[var(--muted)]">
-          Live editor
+        <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3 text-sm text-[var(--muted)]">
+          <span>Live editor</span>
+          <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs uppercase tracking-[0.18em]">
+            {status}
+          </span>
         </div>
 
-        <textarea
-          value={code}
-          onChange={(event) => setCode(event.target.value)}
-          spellCheck={false}
-          disabled={!isRoomReady}
-          placeholder={isRoomReady ? "Paste your code here" : "Room unavailable"}
-          className="min-h-[68vh] w-full resize-y border-0 bg-[var(--editor)] px-5 py-5 font-mono text-[0.95rem] leading-7 text-[var(--foreground)] outline-none disabled:opacity-60"
-        />
+        <div className="grid grid-cols-[auto_1fr] bg-[var(--editor)]">
+          <div
+            ref={gutterRef}
+            aria-hidden="true"
+            className="max-h-[68vh] overflow-hidden border-r border-[var(--border)] bg-black/4 px-3 py-5 text-right font-mono text-[0.95rem] leading-7 text-[var(--muted)] select-none"
+          >
+            {lineNumbers.map((lineNumber) => (
+              <div key={lineNumber}>{lineNumber}</div>
+            ))}
+          </div>
+
+          <textarea
+            ref={textareaRef}
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            onScroll={syncGutterScroll}
+            spellCheck={false}
+            disabled={!isRoomReady}
+            placeholder={isRoomReady ? "Paste your code here" : "Room unavailable"}
+            wrap="off"
+            className="min-h-[68vh] max-h-[68vh] w-full resize-none overflow-auto border-0 bg-[var(--editor)] px-5 py-5 font-mono text-[0.95rem] leading-7 text-[var(--foreground)] outline-none disabled:opacity-60"
+          />
+        </div>
       </section>
+
+      <Modal
+        title="Room details"
+        description="Everything about this room lives here so the editor stays focused."
+        open={isInfoOpen}
+        onClose={() => setIsInfoOpen(false)}
+      >
+        <div className="space-y-4">
+          <div className="rounded-3xl border border-[var(--border)] bg-[var(--card-strong)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.2em] text-[var(--muted)]">
+              Room
+            </div>
+            <div className="mt-2 text-lg font-semibold">{roomId}</div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="rounded-3xl border border-[var(--border)] bg-[var(--card-strong)] p-4">
+              <div className="text-xs font-medium uppercase tracking-[0.2em] text-[var(--muted)]">
+                Sync status
+              </div>
+              <div className="mt-2 text-base font-medium capitalize">{status}</div>
+              <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{notice}</p>
+            </div>
+
+            <div className="rounded-3xl border border-[var(--border)] bg-[var(--card-strong)] p-4">
+              <div className="text-xs font-medium uppercase tracking-[0.2em] text-[var(--muted)]">
+                Link privacy
+              </div>
+              <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                Share the full URL. The hash part after `#` is the private key used to
+                decrypt the room in the browser.
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-[var(--border)] bg-[var(--card-strong)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.2em] text-[var(--muted)]">
+              Room URL
+            </div>
+            <div className="mt-2 break-all text-sm leading-6 text-[var(--foreground)]">
+              {fullRoomUrl || "Open this room in the browser to view the full share link."}
+            </div>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title="Settings"
+        description="Theme lives here now, and more room preferences can be added later."
+        open={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      >
+        <SettingsPanel />
+      </Modal>
     </main>
   );
 }
