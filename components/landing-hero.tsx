@@ -1,25 +1,26 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ShieldCheck } from "lucide-react";
+import { ArrowRight, LayoutGrid, LogIn, ShieldCheck } from "lucide-react";
+import { AuthDialog } from "@/components/auth/auth-dialog";
 import { SettingsPanel } from "@/components/settings-panel";
 import { Button } from "@/components/ui/button";
-import { encryptText } from "@/lib/crypto";
-import { starterSnippet } from "@/lib/editor";
-import { buildRoomUrl, createRoomId, createRoomKey } from "@/lib/room";
-import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-
-const ROOM_EXPIRY_WINDOW_MS = 24 * 60 * 60 * 1000;
-const MAX_ROOM_CREATION_ATTEMPTS = 8;
+import { useAuth } from "@/lib/auth";
+import { buildRoomUrl } from "@/lib/room";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { createAnonymousRoom } from "@/lib/workspace";
 
 export function LandingHero() {
   const router = useRouter();
+  const { user, isLoading } = useAuth();
   const [isCreating, setIsCreating] = useState(false);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
   const createRoom = async () => {
-    if (!isSupabaseConfigured || !supabase) {
+    if (!isSupabaseConfigured) {
       setErrorMessage("Supabase is not configured yet.");
       return;
     }
@@ -28,30 +29,12 @@ export function LandingHero() {
     setErrorMessage("");
 
     try {
-      for (let attempt = 0; attempt < MAX_ROOM_CREATION_ATTEMPTS; attempt += 1) {
-        const roomId = createRoomId();
-        const roomKey = createRoomKey();
-        const encryptedStarter = await encryptText(starterSnippet, roomKey);
-        const expiresAt = new Date(Date.now() + ROOM_EXPIRY_WINDOW_MS).toISOString();
-
-        const { error } = await supabase.from("rooms").insert({
-          id: roomId,
-          encrypted_content: encryptedStarter,
-          expires_at: expiresAt
-        });
-
-        if (!error) {
-          router.push(buildRoomUrl(roomId, roomKey));
-          return;
-        }
-
-        if (error.code !== "23505") {
-          setErrorMessage("Could not create a room right now.");
-          return;
-        }
-      }
-
-      setErrorMessage("Could not reserve a short room link. Try again.");
+      const { roomId, encryptionKey } = await createAnonymousRoom();
+      router.push(buildRoomUrl(roomId, encryptionKey));
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not create a room right now."
+      );
     } finally {
       setIsCreating(false);
     }
@@ -59,11 +42,26 @@ export function LandingHero() {
 
   return (
     <main className="mx-auto w-[min(1160px,calc(100vw-32px))] py-7 sm:w-[min(1160px,calc(100vw-40px))] sm:py-14">
-      <header className="mb-11 flex items-center justify-between">
+      <header className="mb-11 flex flex-wrap items-center justify-between gap-3">
         <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--card)] px-4 py-2 text-sm font-medium shadow-[var(--shadow)] backdrop-blur-xl">
           <ShieldCheck className="size-4 text-[var(--accent)]" />
           Code Share
         </div>
+
+        {isLoading ? null : user ? (
+          <Link
+            href="/workspace"
+            className="inline-flex h-11 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--card)] px-5 text-sm font-medium shadow-[var(--shadow)] backdrop-blur-xl"
+          >
+            <LayoutGrid className="size-4" />
+            Open workspace
+          </Link>
+        ) : (
+          <Button variant="secondary" type="button" onClick={() => setIsAuthOpen(true)}>
+            <LogIn className="size-4" />
+            Sign in
+          </Button>
+        )}
       </header>
 
       <section className="grid gap-7 rounded-[2rem] border border-[var(--border)] bg-[var(--card)] p-8 shadow-[var(--shadow)] backdrop-blur-xl">
@@ -78,9 +76,10 @@ export function LandingHero() {
             </h1>
 
             <p className="mt-5 max-w-[58ch] text-lg leading-8 text-[var(--muted)]">
-              Start a room, copy the link, and both developers can edit the same code
-              in real time. The room content is encrypted in the browser before it is
-              synced, and the room expires after 24 hours.
+              Start a room, copy the link, and both developers can edit the same tabs in
+              real time. Room content is encrypted in the browser before it is synced. A
+              link-only room expires after 24 hours; with an account you keep rooms,
+              subrooms and tabs for as long as you want.
             </p>
 
             <div className="mt-7 flex flex-wrap gap-3">
@@ -93,12 +92,22 @@ export function LandingHero() {
                 {isCreating ? "Creating room..." : "Start secure room"}
                 <ArrowRight className="size-4" />
               </Button>
-              <a
-                href="#how-it-works"
-                className="inline-flex h-12 items-center justify-center rounded-full border border-[var(--border)] bg-transparent px-6 text-sm font-medium text-[var(--foreground)] transition-colors hover:bg-white/5"
-              >
-                How it works
-              </a>
+              {user ? (
+                <Link
+                  href="/workspace"
+                  className="inline-flex h-12 items-center justify-center rounded-full border border-[var(--border)] bg-transparent px-6 text-sm font-medium text-[var(--foreground)] transition-colors hover:bg-white/5"
+                >
+                  Open workspace
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsAuthOpen(true)}
+                  className="inline-flex h-12 items-center justify-center rounded-full border border-[var(--border)] bg-transparent px-6 text-sm font-medium text-[var(--foreground)] transition-colors hover:bg-white/5"
+                >
+                  Create an account
+                </button>
+              )}
             </div>
 
             {errorMessage ? (
@@ -111,6 +120,9 @@ export function LandingHero() {
               <div className="flex gap-2 border-b border-[var(--border)] px-4 py-3">
                 <span className="inline-flex items-center rounded-full border border-[var(--border)] px-3 py-1 text-xs font-medium">
                   room.ts
+                </span>
+                <span className="inline-flex items-center rounded-full px-3 py-1 text-xs text-[var(--muted)]">
+                  notes.md
                 </span>
               </div>
               <pre className="m-0 overflow-x-auto p-5 font-mono text-[0.92rem] leading-7 text-[var(--foreground)]">{`export function shareCode(url: string) {
@@ -132,8 +144,8 @@ export function LandingHero() {
         {[
           "Open the app and generate a room URL with one click.",
           "Send the full URL to another developer.",
-          "Paste or edit code together in the same room.",
-          "Keep the code hidden from the database with browser-side encryption for 24 hours."
+          "Paste or edit code together across as many tabs as you need.",
+          "Sign in to keep rooms, group them into subrooms, and share them with your team."
         ].map((item, index) => (
           <article
             key={item}
@@ -148,6 +160,8 @@ export function LandingHero() {
       <div className="mt-5">
         <SettingsPanel />
       </div>
+
+      <AuthDialog open={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
     </main>
   );
 }

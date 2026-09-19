@@ -1,290 +1,83 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Copy, Download, Info, Settings } from "lucide-react";
+import { ArrowLeft, Copy, Info, LayoutGrid, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { decryptText, encryptText } from "@/lib/crypto";
-import { starterSnippet } from "@/lib/editor";
+import { RoomEditor, type SyncState } from "@/components/room/room-editor";
 import { SettingsPanel } from "@/components/settings-panel";
 import { Modal } from "@/components/ui/modal";
-import { isSupabaseConfigured, supabase, type RoomRecord } from "@/lib/supabase";
-
-type SyncState = "connecting" | "live" | "offline" | "error";
-const SYNC_DEBOUNCE_MS = 3000;
+import { useAuth } from "@/lib/auth";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { loadRoomKey } from "@/lib/workspace";
 
 export function CodeRoom({ roomId }: { roomId: string }) {
-  const [code, setCode] = useState("");
+  const { user } = useAuth();
+  const [encryptionKey, setEncryptionKey] = useState("");
+  const [keyError, setKeyError] = useState("");
   const [status, setStatus] = useState<SyncState>("connecting");
   const [notice, setNotice] = useState("Preparing secure room...");
   const [copied, setCopied] = useState(false);
-  const [codeCopied, setCodeCopied] = useState(false);
   const [fullRoomUrl, setFullRoomUrl] = useState("");
-  const [isRoomReady, setIsRoomReady] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const secretRef = useRef("");
-  const lastSyncedContentRef = useRef("");
-  const latestCodeRef = useRef("");
-  const debounceRef = useRef<number | null>(null);
-  const isFlushingRef = useRef(false);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const gutterRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setFullRoomUrl(window.location.href);
   }, []);
 
+  // The key comes from the URL hash for a shared link. Somebody who owns the
+  // room can also open it without the hash: their copy lives in room_keys.
   useEffect(() => {
-    latestCodeRef.current = code;
-  }, [code]);
-
-  const lineNumbers = useMemo(() => {
-    const lineCount = Math.max(1, code.split("\n").length);
-    return Array.from({ length: lineCount }, (_, index) => index + 1);
-  }, [code]);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
-      setStatus("error");
-      setNotice("Add Supabase environment variables to start syncing rooms.");
+    if (!isSupabaseConfigured) {
+      setKeyError("Add Supabase environment variables to start syncing rooms.");
       return;
     }
 
     const hash = window.location.hash.replace("#", "");
 
-    if (!hash) {
-      setStatus("error");
-      setNotice("This room URL is missing its private encryption key.");
+    if (hash) {
+      setEncryptionKey(hash);
+      setKeyError("");
       return;
     }
 
-    secretRef.current = hash;
-    const client = supabase;
+    if (!user) {
+      setKeyError("This room URL is missing its private encryption key.");
+      return;
+    }
+
     let active = true;
 
-    const ensureRoom = async () => {
-      setStatus("connecting");
-      setNotice("Joining room...");
-
-      const { data, error } = await client
-        .from("rooms")
-        .select("id, encrypted_content, expires_at, updated_at")
-        .eq("id", roomId)
-        .maybeSingle<RoomRecord>();
-
-      if (!active) {
-        return;
-      }
-
-      if (error) {
-        setStatus("error");
-        setNotice("Could not open this room.");
-        return;
-      }
-
-      if (!data) {
-        setStatus("offline");
-        setNotice("This room does not exist anymore. It may have expired.");
-        setIsRoomReady(false);
-        return;
-      }
-
-      if (new Date(data.expires_at).getTime() <= Date.now()) {
-        setStatus("offline");
-        setNotice("This room expired after 24 hours.");
-        setIsRoomReady(false);
-        return;
-      }
-
-      try {
-        const decrypted = await decryptText(data.encrypted_content, hash);
-        const nextCode = decrypted || starterSnippet;
-        lastSyncedContentRef.current = nextCode;
-        latestCodeRef.current = nextCode;
-        setCode(nextCode);
-        setIsRoomReady(true);
-      } catch {
-        setStatus("error");
-        setNotice("The room opened, but the encryption key is invalid.");
-        return;
-      }
-
-      setStatus("live");
-      setNotice("Live sync is active.");
-    };
-
-    void ensureRoom();
-
-    const channel = client
-      .channel(`room:${roomId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "rooms",
-          filter: `id=eq.${roomId}`
-        },
-        async (payload) => {
-          const nextContent = payload.new.encrypted_content as string;
-
-          if (!nextContent || nextContent === payload.old.encrypted_content) {
-            return;
-          }
-
-          try {
-            const decrypted = await decryptText(nextContent, secretRef.current);
-            const hasUnsyncedLocalChanges =
-              latestCodeRef.current !== lastSyncedContentRef.current;
-
-            if (!hasUnsyncedLocalChanges && decrypted !== lastSyncedContentRef.current) {
-              lastSyncedContentRef.current = decrypted;
-              latestCodeRef.current = decrypted;
-              setCode(decrypted);
-            }
-
-            setStatus("live");
-            setNotice("Live sync is active.");
-          } catch {
-            setStatus("error");
-            setNotice("Received an update that could not be decrypted.");
-          }
+    void loadRoomKey(roomId)
+      .then((key) => {
+        if (!active) {
+          return;
         }
-      )
-      .subscribe((state) => {
-        if (state === "SUBSCRIBED") {
-          setStatus("live");
+
+        if (key) {
+          setEncryptionKey(key);
+          setKeyError("");
+          return;
+        }
+
+        setKeyError("This room URL is missing its private encryption key.");
+      })
+      .catch(() => {
+        if (active) {
+          setKeyError("Could not open this room.");
         }
       });
 
     return () => {
       active = false;
-
-      if (debounceRef.current) {
-        window.clearTimeout(debounceRef.current);
-      }
-
-      void client.removeChannel(channel);
     };
-  }, [roomId]);
+  }, [roomId, user]);
 
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !secretRef.current || !isRoomReady) {
-      return;
-    }
-
-    const client = supabase;
-
-    const flushPendingChanges = () => {
-      if (isFlushingRef.current) {
-        return;
-      }
-
-      if (latestCodeRef.current === lastSyncedContentRef.current) {
-        return;
-      }
-
-      isFlushingRef.current = true;
-
-      void (async () => {
-        try {
-          setStatus("connecting");
-          setNotice("Syncing changes...");
-          const encrypted = await encryptText(latestCodeRef.current, secretRef.current);
-          const { error } = await client
-            .from("rooms")
-            .update({ encrypted_content: encrypted })
-            .eq("id", roomId);
-
-          if (error) {
-            setStatus("error");
-            setNotice("Failed to sync the latest changes.");
-            return;
-          }
-
-          lastSyncedContentRef.current = latestCodeRef.current;
-          setStatus("live");
-          setNotice("Live sync is active.");
-        } catch {
-          setStatus("error");
-          setNotice("Failed to encrypt or sync the latest changes.");
-        } finally {
-          isFlushingRef.current = false;
-        }
-      })();
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        flushPendingChanges();
-      }
-    };
-
-    window.addEventListener("pagehide", flushPendingChanges);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener("pagehide", flushPendingChanges);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [isRoomReady, roomId]);
-
-  useEffect(() => {
-    if (
-      !isSupabaseConfigured ||
-      !supabase ||
-      !secretRef.current ||
-      !isRoomReady ||
-      status === "error" ||
-      status === "offline"
-    ) {
-      return;
-    }
-
-    if (code === lastSyncedContentRef.current) {
-      return;
-    }
-
-    if (debounceRef.current) {
-      window.clearTimeout(debounceRef.current);
-    }
-
-    debounceRef.current = window.setTimeout(() => {
-      const client = supabase!;
-
-      void (async () => {
-        try {
-          setStatus("connecting");
-          setNotice("Syncing changes...");
-          const encrypted = await encryptText(code, secretRef.current);
-          const { error } = await client
-            .from("rooms")
-            .update({ encrypted_content: encrypted })
-            .eq("id", roomId);
-
-          if (error) {
-            setStatus("error");
-            setNotice("Failed to sync the latest changes.");
-            return;
-          }
-
-          lastSyncedContentRef.current = code;
-          setStatus("live");
-          setNotice("Live sync is active.");
-        } catch {
-          setStatus("error");
-          setNotice("Failed to encrypt or sync the latest changes.");
-        }
-      })();
-    }, SYNC_DEBOUNCE_MS);
-
-    return () => {
-      if (debounceRef.current) {
-        window.clearTimeout(debounceRef.current);
-      }
-    };
-  }, [code, isRoomReady, roomId, status]);
+  const handleStatusChange = useCallback((nextStatus: SyncState, nextNotice: string) => {
+    setStatus(nextStatus);
+    setNotice(nextNotice);
+  }, []);
 
   const copyLink = async () => {
     try {
@@ -296,36 +89,6 @@ export function CodeRoom({ roomId }: { roomId: string }) {
     }
   };
 
-  const syncGutterScroll = () => {
-    if (!textareaRef.current || !gutterRef.current) {
-      return;
-    }
-
-    gutterRef.current.scrollTop = textareaRef.current.scrollTop;
-  };
-
-  const copyCode = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCodeCopied(true);
-      window.setTimeout(() => setCodeCopied(false), 1800);
-    } catch {
-      setCodeCopied(false);
-    }
-  };
-
-  const downloadCode = () => {
-    const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `code-share-${roomId}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
   const iconRailButtonClassName =
     "group inline-flex h-11 items-center overflow-hidden rounded-full border border-[var(--border)] bg-[var(--card)] px-3 text-sm font-medium text-[var(--foreground)] shadow-[var(--shadow)] backdrop-blur-xl transition-all duration-200 hover:w-auto hover:bg-white/5 focus-visible:w-auto";
 
@@ -333,17 +96,23 @@ export function CodeRoom({ roomId }: { roomId: string }) {
     "max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 group-hover:ml-2 group-hover:max-w-28 group-hover:opacity-100 group-focus-visible:ml-2 group-focus-visible:max-w-28 group-focus-visible:opacity-100";
 
   return (
-    <main className="mx-auto w-full py-7 sm:w-[min(1160px,calc(100vw-40px))] sm:py-8">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
+    <main className="mx-auto flex h-[100dvh] min-h-[540px] w-full flex-col px-3 py-3 sm:w-[min(1600px,calc(100vw-28px))] sm:px-0 sm:py-4">
+      <div className="mb-3 flex shrink-0 flex-wrap items-start justify-between gap-4">
         <div className="flex flex-wrap items-center gap-2.5">
-          <Link
-            href="/"
-            className={iconRailButtonClassName}
-            aria-label="Back to home"
-          >
+          <Link href="/" className={iconRailButtonClassName} aria-label="Back to home">
             <ArrowLeft className="size-4" />
             <span className={iconRailLabelClassName}>Back to home</span>
           </Link>
+          {user ? (
+            <Link
+              href="/workspace"
+              className={iconRailButtonClassName}
+              aria-label="Open workspace"
+            >
+              <LayoutGrid className="size-4" />
+              <span className={iconRailLabelClassName}>Workspace</span>
+            </Link>
+          ) : null}
           <Button
             variant="secondary"
             type="button"
@@ -376,64 +145,22 @@ export function CodeRoom({ roomId }: { roomId: string }) {
         </div>
       </div>
 
-      <section className="overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow)] backdrop-blur-xl">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3 text-sm text-[var(--muted)]">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              type="button"
-              onClick={copyCode}
-              className="rounded-full"
-              disabled={!isRoomReady}
-            >
-              <Copy className="size-4" />
-              {codeCopied ? "Code copied" : "Copy code"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              type="button"
-              onClick={downloadCode}
-              className="rounded-full"
-              disabled={!isRoomReady}
-            >
-              <Download className="size-4" />
-              Download .txt
-            </Button>
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow)] backdrop-blur-xl">
+        {keyError ? (
+          <div className="flex flex-1 items-center justify-center p-8 text-center text-sm leading-7 text-[var(--muted)]">
+            {keyError}
           </div>
-
-          <div className="flex items-center gap-3">
-            <span>Live editor</span>
-            <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs uppercase tracking-[0.18em]">
-              {status}
-            </span>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-[auto_1fr] bg-[var(--editor)]">
-          <div
-            ref={gutterRef}
-            aria-hidden="true"
-            className="max-h-[68vh] overflow-hidden border-r border-[var(--border)] bg-black/4 px-3 py-5 text-right font-mono text-[0.95rem] leading-7 text-[var(--muted)] select-none"
-          >
-            {lineNumbers.map((lineNumber) => (
-              <div key={lineNumber}>{lineNumber}</div>
-            ))}
-          </div>
-
-          <textarea
-            ref={textareaRef}
-            value={code}
-            onChange={(event) => setCode(event.target.value)}
-            onScroll={syncGutterScroll}
-            spellCheck={false}
-            disabled={!isRoomReady}
-            placeholder={isRoomReady ? "Paste your code here" : "Room unavailable"}
-            wrap="off"
-            className="min-h-[68vh] max-h-[68vh] w-full resize-none overflow-auto border-0 bg-[var(--editor)] px-5 py-5 font-mono text-[0.95rem] leading-7 text-[var(--foreground)] outline-none disabled:opacity-60"
+        ) : encryptionKey ? (
+          <RoomEditor
+            roomId={roomId}
+            encryptionKey={encryptionKey}
+            onStatusChange={handleStatusChange}
           />
-        </div>
+        ) : (
+          <div className="flex flex-1 items-center justify-center p-8 text-sm text-[var(--muted)]">
+            Preparing secure room...
+          </div>
+        )}
       </section>
 
       <Modal
@@ -465,7 +192,7 @@ export function CodeRoom({ roomId }: { roomId: string }) {
               </div>
               <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
                 Share the full URL. The hash part after `#` is the private key used to
-                decrypt the room in the browser.
+                decrypt every tab in this room, and it never reaches the server.
               </p>
             </div>
           </div>
